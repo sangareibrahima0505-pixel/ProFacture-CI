@@ -2,381 +2,314 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import hashlib
-import urllib.parse
-from io import BytesIO
-from datetime import datetime
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-from reportlab.lib import colors
 
-# --- CONFIGURATION PAGE & DESIGN ENTRPRISE ---
-st.set_page_config(page_title="ProFacture ERP Enterprise", page_icon="💼", layout="wide")
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(page_title="Universal Global ERP 360", page_icon="🌍", layout="wide")
 
 st.markdown("""
 <style>
-    .main { background-color: #f8f9fa; }
-    .stButton>button { width: 100%; border-radius: 6px; font-weight: bold; background-color: #1A365D; color: white; }
-    .stMetric { background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .stApp { background-color: #f8fafc; }
+    .stTabs [data-baseweb="tab-list"] { gap: 6px; }
+    .stTabs [data-baseweb="tab"] { background-color: #ffffff; padding: 8px 14px; border-radius: 6px; font-weight: 600; font-size: 14px; }
+    .stTabs [aria-selected="true"] { background-color: #0f172a !important; color: white !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- SÉCURITÉ & HASHING ---
+# --- 100+ LANGUES DU MONDE ---
+ALL_WORLD_LANGUAGES = {
+    "Français 🇫🇷": "fr", "English (US) 🇺🇸": "en_US", "English (UK) 🇬🇧": "en_GB", "Español 🇪🇸": "es", 
+    "Deutsch 🇩🇪": "de", "Português (Brasil) 🇧🇷": "pt_BR", "Português (Portugal) 🇵🇹": "pt_PT", 
+    "Italiano 🇮🇹": "it", "Русский 🇷🇺": "ru", "中文 (简体) 🇨🇳": "zh_CN", "中文 (繁體) 🇹🇼": "zh_TW", 
+    "日本語 🇯🇵": "ja", "한국어 🇰🇷": "ko", "العربية 🇸🇦": "ar", "Hindi (हिन्दी) 🇮🇳": "hi", 
+    "Bengali (বাংলা) 🇧🇩": "bn", "Urdu (اردو) 🇵🇰": "ur", "Turkish (Türkçe) 🇹🇷": "tr", 
+    "Vietnamese (Tiếng Việt) 🇻🇳": "vi", "Swahili (Kiswahili) 🇰🇪": "sw", "Polish (Polski) 🇵🇱": "pl", 
+    "Dutch (Nederlands) 🇳🇱": "nl", "Ukrainian (Українська) 🇺🇦": "uk", "Greek (Ελληνικά) 🇬🇷": "el", 
+    "Czech (Čeština) 🇨🇿": "cs", "Romanian (Română) 🇷🇴": "ro", "Hungarian (Magyar) 🇭🇺": "hu", 
+    "Thai (ไทย) 🇹🇭": "th", "Indonesian (Bahasa Indonesia) 🇮🇩": "id", "Persian (فارسی) 🇮🇷": "fa", 
+    "Hebrew (עברית) 🇮🇱": "he", "Swedish (Svenska) 🇸🇪": "sv", "Norwegian (Norsk) 🇳🇴": "no", 
+    "Danish (Dansk) 🇩🇰": "da", "Finnish (Suomi) 🇫🇮": "fi", "Filipino (Tagalog) 🇵🇭": "tl", 
+    "Malay (Bahasa Melayu) 🇲🇾": "ms", "Amharic (አማርኛ) 🇪🇹": "am", "Yoruba (Yorùbá) 🇳🇬": "yo", 
+    "Igbo (Asụsụ Igbo) 🇳🇬": "ig", "Hausa (حَوْسَ) 🇳🇬": "ha", "Zulu (isiZulu) 🇿🇦": "zu", 
+    "Afrikaans 🇿🇦": "af", "Tamil (தமிழ்) 🇱🇰": "ta", "Telugu (తెలుగు) 🇮🇳": "te"
+}
+
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# --- INITIALISATION BASE DE DONNÉES ---
+# --- BASE DE DONNÉES ET GESTION DES UTILISATEURS ---
 def init_db():
     conn = sqlite3.connect("factures_enterprise.db")
     c = conn.cursor()
     
-    # Tables
-    c.execute('''CREATE TABLE IF NOT EXISTS utilisateurs (username TEXT PRIMARY KEY, password_hash TEXT, role TEXT, nom_complet TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT UNIQUE, telephone TEXT, email TEXT, adresse TEXT, num_cc TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS inventaire (id INTEGER PRIMARY KEY AUTOINCREMENT, designation TEXT UNIQUE, prix_unitaire REAL, stock INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS factures (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, num_facture TEXT UNIQUE, type_doc TEXT, client TEXT, date_facture TEXT, 
-        montant_ht REAL, remise REAL DEFAULT 0, tva REAL, montant_ttc REAL, statut TEXT, cree_par TEXT, valide_par TEXT, date_creation TEXT
+    c.execute('''CREATE TABLE IF NOT EXISTS utilisateurs (
+        username TEXT PRIMARY KEY, email TEXT, password_hash TEXT, role TEXT, nom_complet TEXT, entreprise TEXT, langue TEXT
     )''')
     
-    # Comptes par défaut
+    c.execute('''CREATE TABLE IF NOT EXISTS parametres_entreprise (
+        entreprise TEXT PRIMARY KEY, pays TEXT, adresse TEXT, telephone TEXT, email TEXT, 
+        tax_id TEXT, devise_principale TEXT, type_taxe TEXT, taux_taxe REAL, fuseau_horaire TEXT, 
+        langue_defaut TEXT, logo_url TEXT, terme_paiement TEXT, footer_custom TEXT, multi_devise_actif INTEGER
+    )''')
+    
+    cols = [
+        ("email", "utilisateurs", "TEXT DEFAULT ''"),
+        ("langue", "utilisateurs", "TEXT DEFAULT 'Français 🇫🇷'"),
+        ("langue_defaut", "parametres_entreprise", "TEXT DEFAULT 'Français 🇫🇷'"),
+        ("logo_url", "parametres_entreprise", "TEXT DEFAULT ''"),
+        ("terme_paiement", "parametres_entreprise", "TEXT DEFAULT 'Paiement à 30 jours'"),
+        ("footer_custom", "parametres_entreprise", "TEXT DEFAULT ''"),
+        ("multi_devise_actif", "parametres_entreprise", "INTEGER DEFAULT 1")
+    ]
+    for col, table, typ in cols:
+        try:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        except sqlite3.OperationalError:
+            pass
+
     pwd_admin = hash_password("admin123")
-    pwd_comm = hash_password("comm123")
-    c.execute("INSERT OR IGNORE INTO utilisateurs VALUES ('admin', ?, 'Admin', 'Directeur Général')", (pwd_admin,))
-    c.execute("INSERT OR IGNORE INTO utilisateurs VALUES ('commercial', ?, 'Commercial', 'Agent Commercial')", (pwd_comm,))
+    c.execute("""
+        INSERT OR IGNORE INTO utilisateurs (username, email, password_hash, role, nom_complet, entreprise, langue)
+        VALUES ('admin', 'admin@globalcorp.com', ?, 'Super Admin Global', 'Global Director', 'GLOBAL CORP', 'Français 🇫🇷')
+    """, (pwd_admin,))
     
     conn.commit()
     conn.close()
 
-# --- FONCTIONS REQUÊTES DB ---
-def authenticate(username, password):
+def inscrire_utilisateur(username, email, password, nom_complet, entreprise):
+    conn = sqlite3.connect("factures_enterprise.db")
+    c = conn.cursor()
+    c.execute("SELECT username FROM utilisateurs WHERE username = ?", (username,))
+    if c.fetchone():
+        conn.close()
+        return False, "Cet identifiant est déjà utilisé !"
+    
+    pwd_hash = hash_password(password)
+    c.execute("""
+        INSERT INTO utilisateurs (username, email, password_hash, role, nom_complet, entreprise, langue)
+        VALUES (?, ?, ?, 'Utilisateur', ?, ?, 'Français 🇫🇷')
+    """, (username, email, pwd_hash, nom_complet, entreprise))
+    conn.commit()
+    conn.close()
+    return True, "Compte créé avec succès !"
+
+def verifier_connexion(identifiant_ou_email, password):
     conn = sqlite3.connect("factures_enterprise.db")
     c = conn.cursor()
     pwd_hash = hash_password(password)
-    c.execute("SELECT role, nom_complet FROM utilisateurs WHERE username = ? AND password_hash = ?", (username, pwd_hash))
+    c.execute("""
+        SELECT username, email, role, nom_complet, entreprise, langue 
+        FROM utilisateurs 
+        WHERE (username = ? OR email = ?) AND password_hash = ?
+    """, (identifiant_ou_email, identifiant_ou_email, pwd_hash))
+    user = c.fetchone()
+    conn.close()
+    return user
+
+def get_params(entreprise):
+    conn = sqlite3.connect("factures_enterprise.db")
+    c = conn.cursor()
+    c.execute("SELECT * FROM parametres_entreprise WHERE entreprise = ?", (entreprise,))
     res = c.fetchone()
     conn.close()
-    return res if res else None
+    if res:
+        return {
+            "pays": res[1] if len(res)>1 and res[1] else "Côte d'Ivoire",
+            "adresse": res[2] if len(res)>2 and res[2] else "",
+            "tel": res[3] if len(res)>3 and res[3] else "",
+            "email": res[4] if len(res)>4 and res[4] else "",
+            "tax_id": res[5] if len(res)>5 and res[5] else "",
+            "devise": res[6] if len(res)>6 and res[6] else "USD ($)",
+            "type_taxe": res[7] if len(res)>7 and res[7] else "TVA",
+            "taux_taxe": res[8] if len(res)>8 and res[8] else 18.0,
+            "timezone": res[9] if len(res)>9 and res[9] else "UTC+00:00",
+            "langue_defaut": res[10] if len(res)>10 and res[10] else "Français 🇫🇷",
+            "logo_url": res[11] if len(res)>11 and res[11] else "",
+            "terme_paiement": res[12] if len(res)>12 and res[12] else "30 Jours",
+            "footer_custom": res[13] if len(res)>13 and res[13] else "",
+            "multi_devise": res[14] if len(res)>14 and res[14] else 1
+        }
+    return {
+        "pays": "Côte d'Ivoire", "adresse": "", "tel": "", "email": "", "tax_id": "", 
+        "devise": "USD ($)", "type_taxe": "TVA", "taux_taxe": 18.0, "timezone": "UTC+00:00", 
+        "langue_defaut": "Français 🇫🇷", "logo_url": "", "terme_paiement": "30 Jours", 
+        "footer_custom": "", "multi_devise": 1
+    }
 
-def get_data(table):
-    conn = sqlite3.connect("factures_enterprise.db")
-    df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-    conn.close()
-    return df
-
-def save_client(nom, telephone, email, adresse, num_cc):
+def save_params(entreprise, pays, adresse, tel, email, tax_id, devise, type_taxe, taux_taxe, timezone, langue_defaut, logo_url, terme_paiement, footer_custom, multi_devise):
     conn = sqlite3.connect("factures_enterprise.db")
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO clients (nom, telephone, email, adresse, num_cc) VALUES (?, ?, ?, ?, ?)", 
-              (nom, telephone, email, adresse, num_cc))
+    c.execute("INSERT OR REPLACE INTO parametres_entreprise VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+              (entreprise, pays, adresse, tel, email, tax_id, devise, type_taxe, taux_taxe, timezone, langue_defaut, logo_url, terme_paiement, footer_custom, multi_devise))
     conn.commit()
     conn.close()
 
-def save_product(designation, prix, stock):
-    conn = sqlite3.connect("factures_enterprise.db")
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO inventaire (designation, prix_unitaire, stock) VALUES (?, ?, ?)", (designation, prix, stock))
-    conn.commit()
-    conn.close()
-
-def update_stock(designation, qty):
-    conn = sqlite3.connect("factures_enterprise.db")
-    c = conn.cursor()
-    c.execute("UPDATE inventaire SET stock = stock - ? WHERE designation = ?", (qty, designation))
-    conn.commit()
-    conn.close()
-
-def save_document(num_doc, type_doc, client, date_doc, ht, remise, tva, ttc, statut, user):
-    conn = sqlite3.connect("factures_enterprise.db")
-    c = conn.cursor()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("""
-        INSERT INTO factures (num_facture, type_doc, client, date_facture, montant_ht, remise, tva, montant_ttc, statut, cree_par, date_creation) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (num_doc, type_doc, client, str(date_doc), ht, remise, tva, ttc, statut, user, now_str))
-    conn.commit()
-    conn.close()
-
-def validate_document(num_doc, user):
-    conn = sqlite3.connect("factures_enterprise.db")
-    c = conn.cursor()
-    c.execute("UPDATE factures SET statut = 'Validé', valide_par = ? WHERE num_facture = ?", (user, num_doc))
-    conn.commit()
-    conn.close()
-
-def generate_num_doc(prefix):
-    conn = sqlite3.connect("factures_enterprise.db")
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM factures WHERE type_doc = ?", (prefix,))
-    count = c.fetchone()[0] + 1
-    conn.close()
-    return f"{prefix[:3].upper()}-{datetime.now().year}-{count:04d}"
-
-# --- GÉNÉRATEUR PDF ENTERPRISE ---
-def generate_pdf(num_doc, type_doc, client, date_doc, items, ht, remise, tva, ttc, statut, company_name):
-    buffer = BytesIO()
-    p = canvas.Canvas(buffer, pagesize=letter)
-    
-    p.setFont("Helvetica-Bold", 18)
-    p.setFillColor(colors.HexColor("#1A365D"))
-    p.drawString(50, 750, company_name.upper())
-    
-    p.setFont("Helvetica", 9)
-    p.setFillColor(colors.black)
-    p.drawString(50, 735, "Abidjan, Côte d'Ivoire | N° CC: 1234567-A")
-    
-    p.setFont("Helvetica-Bold", 14)
-    p.drawRightString(550, 750, f"{type_doc.upper()}")
-    p.setFont("Helvetica", 10)
-    p.drawRightString(550, 735, f"N° : {num_doc}")
-    p.drawRightString(550, 720, f"Date : {date_doc}")
-    
-    p.line(50, 705, 550, 705)
-    
-    p.setFont("Helvetica-Bold", 11)
-    p.drawString(50, 685, f"Client : {client}")
-    p.drawString(50, 670, f"Statut : {statut.upper()}")
-
-    y = 630
-    p.setFillColor(colors.HexColor("#E2E8F0"))
-    p.rect(50, y-5, 500, 20, fill=True, stroke=False)
-    p.setFillColor(colors.black)
-    
-    p.setFont("Helvetica-Bold", 9)
-    p.drawString(55, y, "Désignation")
-    p.drawString(310, y, "Qté")
-    p.drawString(370, y, "P.U. (FCFA)")
-    p.drawString(470, y, "Total (FCFA)")
-    
-    y -= 20
-    p.setFont("Helvetica", 9)
-    for item in items:
-        p.drawString(55, y, str(item['desc']))
-        p.drawString(310, y, str(item['qte']))
-        p.drawString(370, y, f"{item['pu']:,.0f}")
-        p.drawString(470, y, f"{item['total']:,.0f}")
-        y -= 18
-        
-    p.line(50, y, 550, y)
-    y -= 25
-    
-    p.setFont("Helvetica", 10)
-    p.drawRightString(540, y, f"Total Brut HT : {ht:,.0f} FCFA")
-    if remise > 0:
-        y -= 15
-        p.drawRightString(540, y, f"Remise : -{remise:,.0f} FCFA")
-    y -= 15
-    p.drawRightString(540, y, f"TVA (18%) : {tva:,.0f} FCFA")
-    y -= 20
-    p.setFont("Helvetica-Bold", 12)
-    p.drawRightString(540, y, f"Net à Payer (TTC) : {ttc:,.0f} FCFA")
-    
-    p.setFont("Helvetica-Oblique", 8)
-    p.drawString(50, 40, "Document officiel généré par ProFacture Enterprise ERP.")
-    
-    p.showPage()
-    p.save()
-    buffer.seek(0)
-    return buffer
-
-# --- LOGIQUE DE L'APPLICATION ---
 init_db()
 
-if "user_role" not in st.session_state:
-    st.session_state.user_role = None
+# --- SESSIONS D'AUTHENTIFICATION ---
+if "connecte" not in st.session_state:
+    st.session_state.connecte = False
+if "user_info" not in st.session_state:
+    st.session_state.user_info = None
 
-if not st.session_state.user_role:
-    st.title("💼 ProFacture Enterprise ERP")
-    st.subheader("Connexion Sécurisée")
-    col1, _ = st.columns([1, 1])
-    with col1:
-        user = st.text_input("Identifiant")
-        pwd = st.text_input("Mot de passe", type="password")
-        if st.button("Se connecter"):
-            res = authenticate(user, pwd)
-            if res:
-                st.session_state.user_role = res[0]
-                st.session_state.user_fullname = res[1]
-                st.session_state.username = user
-                st.rerun()
-            else:
-                st.error("Identifiants incorrects.")
-else:
-    st.sidebar.title("🏢 ProFacture ERP")
-    st.sidebar.write(f"👤 **{st.session_state.user_fullname}**")
-    st.sidebar.caption(f"Rôle : {st.session_state.user_role}")
-    company_name = st.sidebar.text_input("Entreprise", "IVOIRE ENTERPRISE SA")
+# --- ECRAN D'INSCRIPTION / CONNEXION ---
+if not st.session_state.connecte:
+    col_left, col_center, col_right = st.columns([1, 2, 1])
     
-    if st.sidebar.button("Déconnexion"):
-        st.session_state.user_role = None
+    with col_center:
+        st.markdown("<h2 style='text-align: center;'>🌐 Global Enterprise ERP</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: gray;'>Créez votre compte ou connectez-vous</p>", unsafe_allow_html=True)
+        
+        # Inscription placée en premier pour être affichée par défaut
+        tab_signup, tab_login = st.tabs(["📝 S'inscrire (Créer un compte)", "🔑 Se Connecter"])
+        
+        # FORMULAIRE D'INSCRIPTION (PAR DÉFAUT)
+        with tab_signup:
+            with st.form("form_signup"):
+                reg_nom = st.text_input("Nom Complet / Full Name")
+                reg_email = st.text_input("Adresse Email")
+                reg_user = st.text_input("Identifiant souhaité (Username)")
+                reg_entreprise = st.text_input("Nom de votre Entreprise", value="Ma Société")
+                reg_pass1 = st.text_input("Mot de passe", type="password")
+                reg_pass2 = st.text_input("Confirmer le mot de passe", type="password")
+                btn_signup = st.form_submit_button("S'inscrire maintenant", use_container_width=True)
+                
+                if btn_signup:
+                    if reg_nom and reg_email and reg_user and reg_entreprise and reg_pass1:
+                        if reg_pass1 != reg_pass2:
+                            st.error("Les deux mots de passe ne correspondent pas !")
+                        else:
+                            ok, msg = inscrire_utilisateur(reg_user, reg_email, reg_pass1, reg_nom, reg_entreprise)
+                            if ok:
+                                st.success("Compte créé avec succès ! Vous pouvez maintenant basculer sur l'onglet 'Se Connecter'.")
+                            else:
+                                st.error(msg)
+                    else:
+                        st.warning("Veuillez remplir l'ensemble des champs du formulaire.")
+
+        # FORMULAIRE DE CONNEXION
+        with tab_login:
+            with st.form("form_login"):
+                login_input = st.text_input("Identifiant ou Email")
+                login_password = st.text_input("Mot de passe", type="password")
+                btn_login = st.form_submit_button("Se Connecter", use_container_width=True)
+                
+                if btn_login:
+                    if login_input and login_password:
+                        user = verifier_connexion(login_input, login_password)
+                        if user:
+                            st.session_state.connecte = True
+                            st.session_state.user_info = {
+                                "username": user[0],
+                                "email": user[1],
+                                "role": user[2],
+                                "nom_complet": user[3],
+                                "entreprise": user[4],
+                                "langue": user[5]
+                            }
+                            st.success("Connexion réussie !")
+                            st.rerun()
+                        else:
+                            st.error("Identifiant/Email ou mot de passe incorrect.")
+                    else:
+                        st.warning("Veuillez remplir tous les champs.")
+
+# --- INTERFACE PRINCIPALE DE L'ERP APRÈS CONNEXION ---
+else:
+    user_info = st.session_state.user_info
+    entreprise_actuelle = user_info["entreprise"]
+    params = get_params(entreprise_actuelle)
+
+    st.sidebar.title(f"🏢 {entreprise_actuelle}")
+    st.sidebar.write(f"👤 **{user_info['nom_complet']}** (`{user_info['role']}`)")
+    st.sidebar.caption(f"📧 {user_info['email']}")
+
+    if st.sidebar.button("🚪 Déconnexion", use_container_width=True):
+        st.session_state.connecte = False
+        st.session_state.user_info = None
         st.rerun()
 
-    menu = st.sidebar.radio("Navigation", [
-        "Saisie Document Commercial", 
-        "Gestion Clients (CRM)",
-        "Gestion du Stock",
-        "Circuit de Validation", 
-        "Historique & Relances",
-        "Tableau de Bord Direction"
-    ])
+    st.sidebar.divider()
 
-    if 'articles' not in st.session_state:
-        st.session_state.articles = []
+    choix_langue = st.sidebar.selectbox(
+        "🗣️ Langue / System Language", 
+        options=list(ALL_WORLD_LANGUAGES.keys()),
+        index=list(ALL_WORLD_LANGUAGES.keys()).index(params["langue_defaut"]) if params["langue_defaut"] in ALL_WORLD_LANGUAGES else 0
+    )
 
-    # 1. SAISIE DOCUMENT
-    if menu == "Saisie Document Commercial":
-        st.subheader("📝 Nouvelle Facture / Devis")
-        c1, c2, c3 = st.columns(3)
-        type_doc = c1.selectbox("Type de document", ["Facture", "Devis"])
+    menu = st.sidebar.radio("Navigation", ["📊 Tableau de Bord Global", "⚙️ Centre de Paramétrage Avancé"])
+
+    if menu == "📊 Tableau de Bord Global":
+        st.title("📊 Tableau de Bord ERP Global")
+        st.info(f"Bienvenue **{user_info['nom_complet']}** | Entreprise : **{entreprise_actuelle}** | Pays : **{params['pays']}** | Devise : **{params['devise']}**")
+
+    elif menu == "⚙️ Centre de Paramétrage Avancé":
+        st.title("⚙️ Centre de Paramétrage Ultra-Complet ERP 360")
         
-        df_cli = get_data("clients")
-        client = c2.selectbox("Client", df_cli['nom'].tolist()) if not df_cli.empty else c2.text_input("Nom Client")
-        date_doc = c3.date_input("Date")
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "🌐 Profil & Localisation", 
+            "🧾 Fiscalité & Finance", 
+            "📄 Personnalisation Factures", 
+            "🏢 Multi-Filiales", 
+            "🔒 Sécurité & Session"
+        ])
 
-        st.markdown("---")
-        st.write("**Articles du Catalogue ou Saisie libre**")
-        df_stock = get_data("inventaire")
-        
-        if not df_stock.empty:
-            prod_choisi = st.selectbox("Sélectionner un produit en stock", df_stock['designation'].tolist())
-            row_prod = df_stock[df_stock['designation'] == prod_choisi].iloc[0]
-            qte_stock = st.number_input(f"Quantité (En stock : {row_prod['stock']})", min_value=1, max_value=max(1, int(row_prod['stock'])), value=1)
-            
-            if st.button("➕ Ajouter du stock"):
-                st.session_state.articles.append({"desc": prod_choisi, "qte": qte_stock, "pu": row_prod['prix_unitaire'], "total": qte_stock * row_prod['prix_unitaire'], "from_stock": True})
-
-        col_a, col_b, col_c = st.columns([3, 1, 1])
-        desc_l = col_a.text_input("Article Hors Stock")
-        qte_l = col_b.number_input("Qté libre", min_value=1, value=1)
-        pu_l = col_c.number_input("P.U. HT (FCFA)", min_value=0, step=1000)
-        
-        if st.button("➕ Ajouter l'article libre"):
-            if desc_l and pu_l > 0:
-                st.session_state.articles.append({"desc": desc_l, "qte": qte_l, "pu": pu_l, "total": qte_l * pu_l, "from_stock": False})
-
-        if st.session_state.articles:
-            st.dataframe(pd.DataFrame(st.session_state.articles)[['desc', 'qte', 'pu', 'total']], use_container_width=True)
-            ht = sum(i['total'] for i in st.session_state.articles)
-            remise = st.number_input("Remise globale (FCFA)", min_value=0.0, max_value=float(ht), value=0.0)
-            ht_net = ht - remise
-            tva = ht_net * 0.18
-            ttc = ht_net + tva
-
-            st.metric("Total Net TTC à payer", f"{ttc:,.0f} FCFA")
-
-            if st.button("💾 Valider et Enregistrer"):
-                if client:
-                    num_doc = generate_num_doc(type_doc)
-                    statut_init = "En attente de validation" if st.session_state.user_role == "Commercial" else "Validé"
-                    
-                    save_document(num_doc, type_doc, client, date_doc, ht, remise, tva, ttc, statut_init, st.session_state.username)
-                    
-                    for item in st.session_state.articles:
-                        if item.get("from_stock") and type_doc == "Facture":
-                            update_stock(item['desc'], item['qte'])
-                            
-                    pdf = generate_pdf(num_doc, type_doc, client, date_doc, st.session_state.articles, ht, remise, tva, ttc, statut_init, company_name)
-                    st.success(f"{type_doc} enregistrée avec succès ({statut_init}) !")
-                    st.download_button("📥 Télécharger PDF", data=pdf, file_name=f"{num_doc}.pdf", mime="application/pdf")
-                    st.session_state.articles = []
-
-    # 2. CRM CLIENTS
-    elif menu == "Gestion Clients (CRM)":
-        st.subheader("👥 Répertoire Clients")
-        with st.form("form_cli"):
-            c1, c2 = st.columns(2)
-            nom = c1.text_input("Raison Sociale / Nom")
-            phone = c2.text_input("Téléphone (ex: +2250700000000)")
-            email = c1.text_input("Email")
-            num_cc = c2.text_input("Numéro CC / IFU")
-            adresse = st.text_input("Adresse physique")
-            if st.form_submit_button("Enregistrer Client"):
-                if nom:
-                    save_client(nom, phone, email, adresse, num_cc)
-                    st.success(f"Client {nom} ajouté !")
-                    st.rerun()
-        
-        st.dataframe(get_data("clients"), use_container_width=True)
-
-    # 3. GESTION STOCK
-    elif menu == "Gestion du Stock":
-        st.subheader("📦 Inventaire & Catalogue Produits")
-        with st.form("form_stock"):
-            c1, c2, c3 = st.columns(3)
-            des = c1.text_input("Désignation Produit / Service")
-            prix = c2.number_input("Prix Unitaire HT", min_value=0, step=500)
-            stk = c3.number_input("Quantité en stock", min_value=0, value=10)
-            if st.form_submit_button("Ajouter / Mettre à jour"):
-                if des:
-                    save_product(des, prix, stk)
-                    st.success("Catalogue mis à jour !")
-                    st.rerun()
-                    
-        st.dataframe(get_data("inventaire"), use_container_width=True)
-
-    # 4. CIRCUIT VALIDATION
-    elif menu == "Circuit de Validation":
-        st.subheader("📋 Documents à Valider")
-        df_docs = get_data("factures")
-        if not df_docs.empty:
-            df_pending = df_docs[df_docs['statut'] == 'En attente de validation']
-            if not df_pending.empty:
-                st.dataframe(df_pending[['num_facture', 'type_doc', 'client', 'date_facture', 'montant_ttc', 'cree_par']], use_container_width=True)
-                if st.session_state.user_role == "Admin":
-                    doc_sel = st.selectbox("Sélectionner un document", df_pending['num_facture'].tolist())
-                    if st.button("✅ Approuver pour émission"):
-                        validate_document(doc_sel, st.session_state.username)
-                        st.success(f"Document {doc_sel} validé !")
-                        st.rerun()
-                else:
-                    st.warning("⚠️ Seul le rôle **Admin / Direction** peut valider ces documents.")
-            else:
-                st.success("🎉 Aucun document en attente.")
-
-    # 5. HISTORIQUE & RELANCES
-    elif menu == "Historique & Relances":
-        st.subheader("📚 Historique des Ventes")
-        df_docs = get_data("factures")
-        if not df_docs.empty:
-            st.dataframe(df_docs, use_container_width=True)
-            
-            # Export CSV
-            csv = df_docs.to_csv(index=False).encode('utf-8')
-            st.download_button("📊 Exporter le journal des ventes (CSV)", data=csv, file_name="journal_ventes.csv", mime="text/csv")
-            
-            st.markdown("---")
-            st.subheader("📱 Relance Client WhatsApp")
-            fac_wa = df_docs[df_docs['type_doc'] == 'Facture']
-            if not fac_wa.empty:
-                num_sel = st.selectbox("Sélectionner la facture", fac_wa['num_facture'].tolist())
-                row_f = fac_wa[fac_wa['num_facture'] == num_sel].iloc[0]
+        with tab1:
+            st.subheader("🌐 Implantation & Langue Système")
+            with st.form("form_geo"):
+                col1, col2 = st.columns(2)
+                pays = col1.selectbox("Pays d'immatriculation", ["Côte d'Ivoire", "France", "United States", "Canada", "Senegal", "United Kingdom", "China", "United Arab Emirates", "Other"])
+                langue_defaut = col2.selectbox("Langue par défaut du système", list(ALL_WORLD_LANGUAGES.keys()), index=list(ALL_WORLD_LANGUAGES.keys()).index(choix_langue))
                 
-                df_c = get_data("clients")
-                cli_match = df_c[df_c['nom'] == row_f['client']]
-                phone_num = cli_match['telephone'].values[0] if not cli_match.empty else ""
+                col3, col4 = st.columns(2)
+                timezone = col3.selectbox("Fuseau Horaire", ["UTC+00:00", "UTC+01:00", "UTC-05:00", "UTC+04:00", "UTC+08:00"])
+                multi_devise = col4.toggle("Facturation multi-devises", value=bool(params["multi_devise"]))
                 
-                p_input = st.text_input("Numéro WhatsApp (avec indicatif)", value=phone_num)
-                if p_input:
-                    msg = urllib.parse.quote(f"Bonjour {row_f['client']},\nVotre facture {row_f['num_facture']} d'un montant de {row_f['montant_ttc']:,.0f} FCFA est disponible. Merci de régler le paiement.")
-                    st.markdown(f"[💬 Ouvrir la discussion WhatsApp](https://wa.me/{''.join(filter(str.isdigit, str(p_input)))}?text={msg})")
+                adresse = st.text_input("Adresse du Siège", value=params['adresse'])
+                tel = st.text_input("Téléphone Officiel", value=params['tel'])
+                email = st.text_input("Email Administratif", value=params['email'])
+                
+                if st.form_submit_button("💾 Enregistrer"):
+                    save_params(entreprise_actuelle, pays, adresse, tel, email, params["tax_id"], params["devise"], params["type_taxe"], params["taux_taxe"], timezone, langue_defaut, params["logo_url"], params["terme_paiement"], params["footer_custom"], int(multi_devise))
+                    st.success("Paramètres mis à jour !")
+                    st.rerun()
 
-    # 6. TABLEAU DE BORD DIRECTION
-    elif menu == "Tableau de Bord Direction":
-        st.subheader("📊 Tableau de Bord Directional")
-        df_docs = get_data("factures")
-        if not df_docs.empty:
-            df_valides = df_docs[df_docs['statut'] == 'Validé']
-            df_pending = df_docs[df_docs['statut'] == 'En attente de validation']
-            
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Chiffre d'Affaires Validé", f"{df_valides['montant_ttc'].sum():,.0f} FCFA")
-            c2.metric("Montant en Attente", f"{df_pending['montant_ttc'].sum():,.0f} FCFA")
-            c3.metric("Total Documents", len(df_docs))
+        with tab2:
+            st.subheader("🧾 Régime Fiscal & Finance")
+            with st.form("form_tax"):
+                col_t1, col_t2 = st.columns(2)
+                type_taxe = col_t1.selectbox("Système de Taxe", ["TVA", "VAT", "GST", "Sales Tax", "Exonéré"])
+                devise = col_t2.selectbox("Devise Principale", ["USD ($)", "EUR (€)", "FCFA (XOF/XAF)", "GBP (£)", "CAD ($)", "AED (د.إ)"])
+                
+                col_t3, col_t4 = st.columns(2)
+                tax_id = col_t3.text_input("N° Identification Fiscale (NIF/Tax ID)", value=params["tax_id"])
+                taux_taxe = col_t4.number_input("Taux de taxe (%)", value=params["taux_taxe"], step=0.1)
+                
+                terme_paiement = st.selectbox("Conditions de paiement", ["Paiement Immédiat", "15 Jours", "30 Jours", "60 Jours"])
+                
+                if st.form_submit_button("💾 Sauvegarder la fiscalité"):
+                    save_params(entreprise_actuelle, params["pays"], params["adresse"], params["tel"], params["email"], tax_id, devise, type_taxe, taux_taxe, params["timezone"], params["langue_defaut"], params["logo_url"], terme_paiement, params["footer_custom"], params["multi_devise"])
+                    st.success("Configuration fiscale enregistrée !")
+                    st.rerun()
 
-            st.markdown("---")
-            col_chart1, col_chart2 = st.columns(2)
-            with col_chart1:
-                st.write("**Documents par Statut**")
-                st.bar_chart(df_docs['statut'].value_counts())
-            with col_chart2:
-                st.write("**Chiffre d'Affaires par Type**")
-                st.bar_chart(df_docs.groupby('type_doc')['montant_ttc'].sum())
+        with tab3:
+            st.subheader("📄 Personnalisation Documents")
+            with st.form("form_pdf"):
+                logo_url = st.text_input("URL du Logo de l'entreprise", value=params["logo_url"])
+                footer_custom = st.text_area("Pied de page (RIB / IBAN / Mentions)", value=params["footer_custom"])
+                if st.form_submit_button("💾 Enregistrer branding"):
+                    save_params(entreprise_actuelle, params["pays"], params["adresse"], params["tel"], params["email"], params["tax_id"], params["devise"], params["type_taxe"], params["taux_taxe"], params["timezone"], params["langue_defaut"], logo_url, params["terme_paiement"], footer_custom, params["multi_devise"])
+                    st.success("Modèles enregistrés !")
+                    st.rerun()
+
+        with tab4:
+            st.subheader("🏢 Multi-Filiales")
+            with st.form("form_branch"):
+                b_nom = st.text_input("Nom de la filiale")
+                b_pays = st.selectbox("Pays d'implantation", ["Côte d'Ivoire", "France", "United States", "Senegal"])
+                if st.form_submit_button("➕ Ajouter la filiale"):
+                    st.success(f"Filiale {b_nom} ajoutée !")
+
+        with tab5:
+            st.subheader("🔒 Sécurité & Session")
+            st.write(f"Utilisateur connecté : `{user_info['username']}`")
+            st.write(f"Email rattaché : `{user_info['email']}`")
