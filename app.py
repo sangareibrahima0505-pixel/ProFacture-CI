@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import hashlib
+import google.generativeai as genai
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Universal Global ERP 360", page_icon="🌍", layout="wide")
@@ -111,29 +112,23 @@ def get_params(entreprise):
     c.execute("SELECT * FROM parametres_entreprise WHERE entreprise = ?", (entreprise,))
     res = c.fetchone()
     conn.close()
-    if res:
-        return {
-            "pays": res[1] if len(res)>1 and res[1] else "Côte d'Ivoire",
-            "adresse": res[2] if len(res)>2 and res[2] else "",
-            "tel": res[3] if len(res)>3 and res[3] else "",
-            "email": res[4] if len(res)>4 and res[4] else "",
-            "tax_id": res[5] if len(res)>5 and res[5] else "",
-            "devise": res[6] if len(res)>6 and res[6] else "USD ($)",
-            "type_taxe": res[7] if len(res)>7 and res[7] else "TVA",
-            "taux_taxe": res[8] if len(res)>8 and res[8] else 18.0,
-            "timezone": res[9] if len(res)>9 and res[9] else "UTC+00:00",
-            "langue_defaut": res[10] if len(res)>10 and res[10] else "Français 🇫🇷",
-            "logo_url": res[11] if len(res)>11 and res[11] else "",
-            "terme_paiement": res[12] if len(res)>12 and res[12] else "30 Jours",
-            "footer_custom": res[13] if len(res)>13 and res[13] else "",
-            "multi_devise": res[14] if len(res)>14 and res[14] else 1
-        }
-    return {
+    
+    defaults = {
         "pays": "Côte d'Ivoire", "adresse": "", "tel": "", "email": "", "tax_id": "", 
         "devise": "USD ($)", "type_taxe": "TVA", "taux_taxe": 18.0, "timezone": "UTC+00:00", 
         "langue_defaut": "Français 🇫🇷", "logo_url": "", "terme_paiement": "30 Jours", 
         "footer_custom": "", "multi_devise": 1
     }
+    
+    if res:
+        keys = ["entreprise", "pays", "adresse", "tel", "email", "tax_id", "devise", 
+                "type_taxe", "taux_taxe", "timezone", "langue_defaut", "logo_url", 
+                "terme_paiement", "footer_custom", "multi_devise"]
+        for i, key in enumerate(keys):
+            if i < len(res) and res[i] is not None:
+                defaults[key] = res[i]
+                
+    return defaults
 
 def save_params(entreprise, pays, adresse, tel, email, tax_id, devise, type_taxe, taux_taxe, timezone, langue_defaut, logo_url, terme_paiement, footer_custom, multi_devise):
     conn = sqlite3.connect("factures_enterprise.db")
@@ -145,11 +140,13 @@ def save_params(entreprise, pays, adresse, tel, email, tax_id, devise, type_taxe
 
 init_db()
 
-# --- SESSIONS D'AUTHENTIFICATION ---
+# --- SESSIONS D'AUTHENTIFICATION & CHAT ---
 if "connecte" not in st.session_state:
     st.session_state.connecte = False
 if "user_info" not in st.session_state:
     st.session_state.user_info = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
 # --- ECRAN D'INSCRIPTION / CONNEXION ---
 if not st.session_state.connecte:
@@ -159,10 +156,8 @@ if not st.session_state.connecte:
         st.markdown("<h2 style='text-align: center;'>🌐 Global Enterprise ERP</h2>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: gray;'>Créez votre compte ou connectez-vous</p>", unsafe_allow_html=True)
         
-        # Inscription placée en premier pour être affichée par défaut
         tab_signup, tab_login = st.tabs(["📝 S'inscrire (Créer un compte)", "🔑 Se Connecter"])
         
-        # FORMULAIRE D'INSCRIPTION (PAR DÉFAUT)
         with tab_signup:
             with st.form("form_signup"):
                 reg_nom = st.text_input("Nom Complet / Full Name")
@@ -186,7 +181,6 @@ if not st.session_state.connecte:
                     else:
                         st.warning("Veuillez remplir l'ensemble des champs du formulaire.")
 
-        # FORMULAIRE DE CONNEXION
         with tab_login:
             with st.form("form_login"):
                 login_input = st.text_input("Identifiant ou Email")
@@ -213,7 +207,7 @@ if not st.session_state.connecte:
                     else:
                         st.warning("Veuillez remplir tous les champs.")
 
-# --- INTERFACE PRINCIPALE DE L'ERP APRÈS CONNEXION ---
+# --- INTERFACE PRINCIPALE APRÈS CONNEXION ---
 else:
     user_info = st.session_state.user_info
     entreprise_actuelle = user_info["entreprise"]
@@ -236,12 +230,54 @@ else:
         index=list(ALL_WORLD_LANGUAGES.keys()).index(params["langue_defaut"]) if params["langue_defaut"] in ALL_WORLD_LANGUAGES else 0
     )
 
-    menu = st.sidebar.radio("Navigation", ["📊 Tableau de Bord Global", "⚙️ Centre de Paramétrage Avancé"])
+    menu = st.sidebar.radio("Navigation", [
+        "📊 Tableau de Bord Global", 
+        "🤖 Assistant IA ERP", 
+        "⚙️ Centre de Paramétrage Avancé"
+    ])
 
+    # TABLEAU DE BORD
     if menu == "📊 Tableau de Bord Global":
         st.title("📊 Tableau de Bord ERP Global")
         st.info(f"Bienvenue **{user_info['nom_complet']}** | Entreprise : **{entreprise_actuelle}** | Pays : **{params['pays']}** | Devise : **{params['devise']}**")
 
+    # ASSISTANT IA
+    elif menu == "🤖 Assistant IA ERP":
+        st.title("🤖 Assistant Virtuel & Conseiller ERP")
+        st.write("Posez vos questions concernant la gestion de votre entreprise, la fiscalité, les factures ou l'utilisation du logiciel.")
+
+        api_key = st.text_input("Clé API Google Gemini", type="password", help="Insérez votre clé API Gemini pour activer le modèle")
+
+        # Affichage de l'historique des conversations
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+
+        # Saisie du message de l'utilisateur
+        if user_prompt := st.chat_input("Ex: Comment calculer la TVA pour ma facture ?"):
+            st.session_state.chat_history.append({"role": "user", "content": user_prompt})
+            with st.chat_message("user"):
+                st.write(user_prompt)
+
+            with st.chat_message("assistant"):
+                if not api_key:
+                    reponse = "⚠️ Veuillez renseigner une clé API Google Gemini ci-dessus pour activer les réponses de l'IA."
+                    st.warning(reponse)
+                else:
+                    try:
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel("gemini-1.5-flash")
+                        prompt_systeme = f"Tu es l'assistant expert de l'ERP de l'entreprise '{entreprise_actuelle}' basée en {params['pays']}. L'utilisateur demande: {user_prompt}"
+                        response = model.generate_content(prompt_systeme)
+                        reponse = response.text
+                        st.write(reponse)
+                    except Exception as e:
+                        reponse = f"Erreur de connexion à l'IA : {str(e)}"
+                        st.error(reponse)
+
+            st.session_state.chat_history.append({"role": "assistant", "content": reponse})
+
+    # PARAMÈTRES
     elif menu == "⚙️ Centre de Paramétrage Avancé":
         st.title("⚙️ Centre de Paramétrage Ultra-Complet ERP 360")
         
