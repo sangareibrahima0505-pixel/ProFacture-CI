@@ -2,6 +2,9 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import hashlib
+import requests
+import google.generativeai as genai
+from PIL import Image
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Universal Global ERP 360", page_icon="🌍", layout="wide")
@@ -15,26 +18,40 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 100+ LANGUES DU MONDE ---
+# --- LANGUES DU MONDE ---
 ALL_WORLD_LANGUAGES = {
-    "Français 🇫🇷": "fr", "English (US) 🇺🇸": "en_US", "English (UK) 🇬🇧": "en_GB", "Español 🇪🇸": "es", 
-    "Deutsch 🇩🇪": "de", "Português (Brasil) 🇧🇷": "pt_BR", "Português (Portugal) 🇵🇹": "pt_PT", 
-    "Italiano 🇮🇹": "it", "Русский 🇷🇺": "ru", "中文 (简体) 🇨🇳": "zh_CN", "中文 (繁體) 🇹🇼": "zh_TW", 
-    "日本語 🇯🇵": "ja", "한국어 🇰🇷": "ko", "العربية 🇸🇦": "ar", "Hindi (हिन्दी) 🇮🇳": "hi", 
-    "Bengali (বাংলা) 🇧🇩": "bn", "Urdu (اردو) 🇵🇰": "ur", "Turkish (Türkçe) 🇹🇷": "tr", 
-    "Vietnamese (Tiếng Việt) 🇻🇳": "vi", "Swahili (Kiswahili) 🇰🇪": "sw", "Polish (Polski) 🇵🇱": "pl", 
-    "Dutch (Nederlands) 🇳🇱": "nl", "Ukrainian (Українська) 🇺🇦": "uk", "Greek (Ελληνικά) 🇬🇷": "el", 
-    "Czech (Čeština) 🇨🇿": "cs", "Romanian (Română) 🇷🇴": "ro", "Hungarian (Magyar) 🇭🇺": "hu", 
-    "Thai (ไทย) 🇹🇭": "th", "Indonesian (Bahasa Indonesia) 🇮🇩": "id", "Persian (فارسی) 🇮🇷": "fa", 
-    "Hebrew (עברית) 🇮🇱": "he", "Swedish (Svenska) 🇸🇪": "sv", "Norwegian (Norsk) 🇳🇴": "no", 
-    "Danish (Dansk) 🇩🇰": "da", "Finnish (Suomi) 🇫🇮": "fi", "Filipino (Tagalog) 🇵🇭": "tl", 
-    "Malay (Bahasa Melayu) 🇲🇾": "ms", "Amharic (አማርኛ) 🇪🇹": "am", "Yoruba (Yorùbá) 🇳🇬": "yo", 
-    "Igbo (Asụsụ Igbo) 🇳🇬": "ig", "Hausa (حَوْسَ) 🇳🇬": "ha", "Zulu (isiZulu) 🇿🇦": "zu", 
-    "Afrikaans 🇿🇦": "af", "Tamil (தமிழ்) 🇱🇰": "ta", "Telugu (తెలుగు) 🇮🇳": "te"
+    "Français 🇫🇷": "fr", "English (US) 🇺🇸": "en_US", "Español 🇪🇸": "es", 
+    "Deutsch 🇩🇪": "de", "Português 🇵🇹": "pt", "Italiano 🇮🇹": "it", 
+    "Русский 🇷🇺": "ru", "中文 🇨🇳": "zh", "日本語 🇯🇵": "ja", "العربية 🇸🇦": "ar"
+}
+
+DEVISES_CODES = {
+    "USD ($)": "USD",
+    "EUR (€)": "EUR",
+    "FCFA (XOF)": "XOF",
+    "GBP (£)": "GBP",
+    "CAD ($)": "CAD",
+    "AED (د.إ)": "AED"
 }
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
+
+# --- CONVERTISSEUR DE DEVISES EN TEMPS RÉEL ---
+@st.cache_data(ttl=3600)
+def obtenir_taux_change(devise_source, devise_cible):
+    src = DEVISES_CODES.get(devise_source, "USD")
+    dst = DEVISES_CODES.get(devise_cible, "EUR")
+    if src == dst:
+        return 1.0
+    try:
+        url = f"https://open.er-api.com/v6/latest/{src}"
+        res = requests.get(url, timeout=5).json()
+        if res.get("result") == "success":
+            return res["rates"].get(dst, 1.0)
+    except Exception:
+        pass
+    return 1.0
 
 # --- BASE DE DONNÉES ET GESTION DES UTILISATEURS ---
 def init_db():
@@ -51,21 +68,6 @@ def init_db():
         langue_defaut TEXT, logo_url TEXT, terme_paiement TEXT, footer_custom TEXT, multi_devise_actif INTEGER
     )''')
     
-    cols = [
-        ("email", "utilisateurs", "TEXT DEFAULT ''"),
-        ("langue", "utilisateurs", "TEXT DEFAULT 'Français 🇫🇷'"),
-        ("langue_defaut", "parametres_entreprise", "TEXT DEFAULT 'Français 🇫🇷'"),
-        ("logo_url", "parametres_entreprise", "TEXT DEFAULT ''"),
-        ("terme_paiement", "parametres_entreprise", "TEXT DEFAULT 'Paiement à 30 jours'"),
-        ("footer_custom", "parametres_entreprise", "TEXT DEFAULT ''"),
-        ("multi_devise_actif", "parametres_entreprise", "INTEGER DEFAULT 1")
-    ]
-    for col, table, typ in cols:
-        try:
-            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
-        except sqlite3.OperationalError:
-            pass
-
     pwd_admin = hash_password("admin123")
     c.execute("""
         INSERT OR IGNORE INTO utilisateurs (username, email, password_hash, role, nom_complet, entreprise, langue)
@@ -111,29 +113,23 @@ def get_params(entreprise):
     c.execute("SELECT * FROM parametres_entreprise WHERE entreprise = ?", (entreprise,))
     res = c.fetchone()
     conn.close()
-    if res:
-        return {
-            "pays": res[1] if len(res)>1 and res[1] else "Côte d'Ivoire",
-            "adresse": res[2] if len(res)>2 and res[2] else "",
-            "tel": res[3] if len(res)>3 and res[3] else "",
-            "email": res[4] if len(res)>4 and res[4] else "",
-            "tax_id": res[5] if len(res)>5 and res[5] else "",
-            "devise": res[6] if len(res)>6 and res[6] else "USD ($)",
-            "type_taxe": res[7] if len(res)>7 and res[7] else "TVA",
-            "taux_taxe": res[8] if len(res)>8 and res[8] else 18.0,
-            "timezone": res[9] if len(res)>9 and res[9] else "UTC+00:00",
-            "langue_defaut": res[10] if len(res)>10 and res[10] else "Français 🇫🇷",
-            "logo_url": res[11] if len(res)>11 and res[11] else "",
-            "terme_paiement": res[12] if len(res)>12 and res[12] else "30 Jours",
-            "footer_custom": res[13] if len(res)>13 and res[13] else "",
-            "multi_devise": res[14] if len(res)>14 and res[14] else 1
-        }
-    return {
+    
+    defaults = {
         "pays": "Côte d'Ivoire", "adresse": "", "tel": "", "email": "", "tax_id": "", 
         "devise": "USD ($)", "type_taxe": "TVA", "taux_taxe": 18.0, "timezone": "UTC+00:00", 
         "langue_defaut": "Français 🇫🇷", "logo_url": "", "terme_paiement": "30 Jours", 
         "footer_custom": "", "multi_devise": 1
     }
+    
+    if res:
+        keys = ["entreprise", "pays", "adresse", "tel", "email", "tax_id", "devise", 
+                "type_taxe", "taux_taxe", "timezone", "langue_defaut", "logo_url", 
+                "terme_paiement", "footer_custom", "multi_devise"]
+        for i, key in enumerate(keys):
+            if i < len(res) and res[i] is not None:
+                defaults[key] = res[i]
+                
+    return defaults
 
 def save_params(entreprise, pays, adresse, tel, email, tax_id, devise, type_taxe, taux_taxe, timezone, langue_defaut, logo_url, terme_paiement, footer_custom, multi_devise):
     conn = sqlite3.connect("factures_enterprise.db")
@@ -145,11 +141,13 @@ def save_params(entreprise, pays, adresse, tel, email, tax_id, devise, type_taxe
 
 init_db()
 
-# --- SESSIONS D'AUTHENTIFICATION ---
+# --- SESSIONS D'AUTHENTIFICATION & CHAT ---
 if "connecte" not in st.session_state:
     st.session_state.connecte = False
 if "user_info" not in st.session_state:
     st.session_state.user_info = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
 # --- ECRAN D'INSCRIPTION / CONNEXION ---
 if not st.session_state.connecte:
@@ -159,10 +157,8 @@ if not st.session_state.connecte:
         st.markdown("<h2 style='text-align: center;'>🌐 Global Enterprise ERP</h2>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: gray;'>Créez votre compte ou connectez-vous</p>", unsafe_allow_html=True)
         
-        # Inscription placée en premier pour être affichée par défaut
         tab_signup, tab_login = st.tabs(["📝 S'inscrire (Créer un compte)", "🔑 Se Connecter"])
         
-        # FORMULAIRE D'INSCRIPTION (PAR DÉFAUT)
         with tab_signup:
             with st.form("form_signup"):
                 reg_nom = st.text_input("Nom Complet / Full Name")
@@ -180,13 +176,12 @@ if not st.session_state.connecte:
                         else:
                             ok, msg = inscrire_utilisateur(reg_user, reg_email, reg_pass1, reg_nom, reg_entreprise)
                             if ok:
-                                st.success("Compte créé avec succès ! Vous pouvez maintenant basculer sur l'onglet 'Se Connecter'.")
+                                st.success("Compte créé avec succès ! Vous pouvez basculer sur 'Se Connecter'.")
                             else:
                                 st.error(msg)
                     else:
-                        st.warning("Veuillez remplir l'ensemble des champs du formulaire.")
+                        st.warning("Veuillez remplir tous les champs.")
 
-        # FORMULAIRE DE CONNEXION
         with tab_login:
             with st.form("form_login"):
                 login_input = st.text_input("Identifiant ou Email")
@@ -199,21 +194,17 @@ if not st.session_state.connecte:
                         if user:
                             st.session_state.connecte = True
                             st.session_state.user_info = {
-                                "username": user[0],
-                                "email": user[1],
-                                "role": user[2],
-                                "nom_complet": user[3],
-                                "entreprise": user[4],
-                                "langue": user[5]
+                                "username": user[0], "email": user[1], "role": user[2],
+                                "nom_complet": user[3], "entreprise": user[4], "langue": user[5]
                             }
                             st.success("Connexion réussie !")
                             st.rerun()
                         else:
-                            st.error("Identifiant/Email ou mot de passe incorrect.")
+                            st.error("Identifiant ou mot de passe incorrect.")
                     else:
                         st.warning("Veuillez remplir tous les champs.")
 
-# --- INTERFACE PRINCIPALE DE L'ERP APRÈS CONNEXION ---
+# --- INTERFACE PRINCIPALE APRÈS CONNEXION ---
 else:
     user_info = st.session_state.user_info
     entreprise_actuelle = user_info["entreprise"]
@@ -230,86 +221,140 @@ else:
 
     st.sidebar.divider()
 
-    choix_langue = st.sidebar.selectbox(
-        "🗣️ Langue / System Language", 
-        options=list(ALL_WORLD_LANGUAGES.keys()),
-        index=list(ALL_WORLD_LANGUAGES.keys()).index(params["langue_defaut"]) if params["langue_defaut"] in ALL_WORLD_LANGUAGES else 0
-    )
+    menu = st.sidebar.radio("Navigation", [
+        "📊 Tableau de Bord Global", 
+        "💳 Facturation & Paiement Auto",
+        "📷 Scanner de Factures IA (OCR)",
+        "🤖 Assistant IA ERP", 
+        "⚙️ Centre de Paramétrage Avancé"
+    ])
 
-    menu = st.sidebar.radio("Navigation", ["📊 Tableau de Bord Global", "⚙️ Centre de Paramétrage Avancé"])
-
+    # TABLEAU DE BORD
     if menu == "📊 Tableau de Bord Global":
         st.title("📊 Tableau de Bord ERP Global")
-        st.info(f"Bienvenue **{user_info['nom_complet']}** | Entreprise : **{entreprise_actuelle}** | Pays : **{params['pays']}** | Devise : **{params['devise']}**")
+        st.info(f"Bienvenue **{user_info['nom_complet']}** | Entreprise : **{entreprise_actuelle}** | Devise principale : **{params['devise']}**")
 
-    elif menu == "⚙️ Centre de Paramétrage Avancé":
-        st.title("⚙️ Centre de Paramétrage Ultra-Complet ERP 360")
+    # FACTURATION & PAIEMENT AUTOMATIQUE (MODULE NOUVEAU)
+    elif menu == "💳 Facturation & Paiement Auto":
+        st.title("💳 Création de Facture & Liens de Paiement")
+        st.write("Générez des factures en choisissant la devise du client, avec conversion automatique et génération de liens d'encaissement.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            client_nom = st.text_input("Nom du Client / Entreprise")
+            montant_ht = st.number_input("Montant HT", min_value=0.0, value=100.0, step=10.0)
+            devise_facture = st.selectbox("Devise de la facture", list(DEVISES_CODES.keys()), index=0)
+
+        with col2:
+            taux_taxe = params["taux_taxe"]
+            montant_taxe = montant_ht * (taux_taxe / 100.0)
+            montant_ttc = montant_ht + montant_taxe
+
+            st.metric("Taux de taxe applicable", f"{taux_taxe}% ({params['type_taxe']})")
+            st.metric("Total TTC à facturer", f"{montant_ttc:,.2f} {DEVISES_CODES[devise_facture]}")
+
+        st.divider()
+        st.subheader("💱 Conversion en Temps Réel vers votre Devise Principale")
         
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "🌐 Profil & Localisation", 
-            "🧾 Fiscalité & Finance", 
-            "📄 Personnalisation Factures", 
-            "🏢 Multi-Filiales", 
-            "🔒 Sécurité & Session"
-        ])
+        devise_base = params["devise"]
+        taux_change = obtenir_taux_change(devise_facture, devise_base)
+        valeur_convertie = montant_ttc * taux_change
 
-        with tab1:
-            st.subheader("🌐 Implantation & Langue Système")
-            with st.form("form_geo"):
-                col1, col2 = st.columns(2)
-                pays = col1.selectbox("Pays d'immatriculation", ["Côte d'Ivoire", "France", "United States", "Canada", "Senegal", "United Kingdom", "China", "United Arab Emirates", "Other"])
-                langue_defaut = col2.selectbox("Langue par défaut du système", list(ALL_WORLD_LANGUAGES.keys()), index=list(ALL_WORLD_LANGUAGES.keys()).index(choix_langue))
-                
-                col3, col4 = st.columns(2)
-                timezone = col3.selectbox("Fuseau Horaire", ["UTC+00:00", "UTC+01:00", "UTC-05:00", "UTC+04:00", "UTC+08:00"])
-                multi_devise = col4.toggle("Facturation multi-devises", value=bool(params["multi_devise"]))
-                
-                adresse = st.text_input("Adresse du Siège", value=params['adresse'])
-                tel = st.text_input("Téléphone Officiel", value=params['tel'])
-                email = st.text_input("Email Administratif", value=params['email'])
-                
-                if st.form_submit_button("💾 Enregistrer"):
-                    save_params(entreprise_actuelle, pays, adresse, tel, email, params["tax_id"], params["devise"], params["type_taxe"], params["taux_taxe"], timezone, langue_defaut, params["logo_url"], params["terme_paiement"], params["footer_custom"], int(multi_devise))
-                    st.success("Paramètres mis à jour !")
-                    st.rerun()
+        st.write(f"Taux de change direct : **1 {DEVISES_CODES[devise_facture]} = {taux_change:.4f} {DEVISES_CODES[devise_base]}**")
+        st.success(f"Valeur enregistrée dans vos comptes ({DEVISES_CODES[devise_base]}) : **{valeur_convertie:,.2f} {DEVISES_CODES[devise_base]}**")
 
-        with tab2:
-            st.subheader("🧾 Régime Fiscal & Finance")
-            with st.form("form_tax"):
-                col_t1, col_t2 = st.columns(2)
-                type_taxe = col_t1.selectbox("Système de Taxe", ["TVA", "VAT", "GST", "Sales Tax", "Exonéré"])
-                devise = col_t2.selectbox("Devise Principale", ["USD ($)", "EUR (€)", "FCFA (XOF/XAF)", "GBP (£)", "CAD ($)", "AED (د.إ)"])
-                
-                col_t3, col_t4 = st.columns(2)
-                tax_id = col_t3.text_input("N° Identification Fiscale (NIF/Tax ID)", value=params["tax_id"])
-                taux_taxe = col_t4.number_input("Taux de taxe (%)", value=params["taux_taxe"], step=0.1)
-                
-                terme_paiement = st.selectbox("Conditions de paiement", ["Paiement Immédiat", "15 Jours", "30 Jours", "60 Jours"])
-                
-                if st.form_submit_button("💾 Sauvegarder la fiscalité"):
-                    save_params(entreprise_actuelle, params["pays"], params["adresse"], params["tel"], params["email"], tax_id, devise, type_taxe, taux_taxe, params["timezone"], params["langue_defaut"], params["logo_url"], terme_paiement, params["footer_custom"], params["multi_devise"])
-                    st.success("Configuration fiscale enregistrée !")
-                    st.rerun()
+        st.divider()
+        st.subheader("🔗 Liens de Paiement Instantanés")
+        
+        lien_stripe = f"https://buy.stripe.com/pay?amount={int(montant_ttc*100)}&currency={DEVISES_CODES[devise_facture].lower()}"
+        lien_paypal = f"https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business={params['email']}&amount={montant_ttc}&currency_code={DEVISES_CODES[devise_facture]}"
 
-        with tab3:
-            st.subheader("📄 Personnalisation Documents")
-            with st.form("form_pdf"):
-                logo_url = st.text_input("URL du Logo de l'entreprise", value=params["logo_url"])
-                footer_custom = st.text_area("Pied de page (RIB / IBAN / Mentions)", value=params["footer_custom"])
-                if st.form_submit_button("💾 Enregistrer branding"):
-                    save_params(entreprise_actuelle, params["pays"], params["adresse"], params["tel"], params["email"], params["tax_id"], params["devise"], params["type_taxe"], params["taux_taxe"], params["timezone"], params["langue_defaut"], logo_url, params["terme_paiement"], footer_custom, params["multi_devise"])
-                    st.success("Modèles enregistrés !")
-                    st.rerun()
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.markdown(f"[💳 Payer par Carte Bancaire (Stripe)]({lien_stripe})", unsafe_allow_html=True)
+        with col_p2:
+            st.markdown(f"[🅿️ Payer via PayPal]({lien_paypal})", unsafe_allow_html=True)
 
-        with tab4:
-            st.subheader("🏢 Multi-Filiales")
-            with st.form("form_branch"):
-                b_nom = st.text_input("Nom de la filiale")
-                b_pays = st.selectbox("Pays d'implantation", ["Côte d'Ivoire", "France", "United States", "Senegal"])
-                if st.form_submit_button("➕ Ajouter la filiale"):
-                    st.success(f"Filiale {b_nom} ajoutée !")
+    # SCANNER OCR
+    elif menu == "📷 Scanner de Factures IA (OCR)":
+        st.title("📷 Scan & Extraction Automatique de Factures")
+        api_key = st.text_input("Clé API Google Gemini", type="password")
+        uploaded_file = st.file_uploader("Choisissez une facture (JPG, PNG)", type=["jpg", "jpeg", "png"])
 
-        with tab5:
-            st.subheader("🔒 Sécurité & Session")
-            st.write(f"Utilisateur connecté : `{user_info['username']}`")
-            st.write(f"Email rattaché : `{user_info['email']}`")
+        if uploaded_file and st.button("🚀 Analyser"):
+            if not api_key:
+                st.warning("Veuillez renseigner votre clé API Gemini.")
+            else:
+                image = Image.open(uploaded_file)
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                prompt = "Exécute l'analyse comptable de ce reçu: Fournisseur, Date, HT, TVA, TTC."
+                res = model.generate_content([prompt, image])
+                st.markdown(res.text)
+
+    # ASSISTANT IA
+    elif menu == "🤖 Assistant IA ERP":
+        st.title("🤖 Assistant Virtuel & Conseiller ERP")
+        api_key = st.text_input("Clé API Google Gemini", type="password")
+
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+
+        if user_prompt := st.chat_input("Votre question..."):
+            st.session_state.chat_history.append({"role": "user", "content": user_prompt})
+            with st.chat_message("user"):
+                st.write(user_prompt)
+
+            with st.chat_message("assistant"):
+                if api_key:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel("gemini-1.5-flash")
+                    resp = model.generate_content(f"ERP {entreprise_actuelle} ({params['pays']}): {user_prompt}")
+                    st.write(resp.text)
+                    st.session_state.chat_history.append({"role": "assistant", "content": resp.text})
+                else:
+                    st.warning("Clé API requise.")
+
+# --- PARAMÈTRES ---
+    elif menu == "⚙️ Centre de Paramétrage Avancé":
+        st.title("⚙️ Centre de Paramétrage")
+
+        # Liste complète des pays du monde en français
+        TOUS_LES_PAYS = [
+            "Afghanistan", "Afrique du Sud", "Albanie", "Algérie", "Allemagne", "Andorre", "Angola", "Antigua-et-Barbuda", 
+            "Arabie saoudite", "Argentine", "Arménie", "Australie", "Autriche", "Azerbaïdjan", "Bahamas", "Bahreïn", 
+            "Bangladesh", "Barbade", "Belgique", "Bélize", "Bénin", "Bhoutan", "Biélorussie", "Birmanie", "Bolivie", 
+            "Bosnie-Herzégovine", "Botswana", "Brésil", "Brunéi Darussalam", "Bulgarie", "Burkina Faso", "Burundi", 
+            "Cabo Verde", "Cambodge", "Cameroun", "Canada", "Chili", "Chine", "Chypre", "Colombie", "Comores", "Congo", 
+            "Costa Rica", "Côte d'Ivoire", "Croatie", "Cuba", "Danemark", "Djibouti", "Dominique", "Égypte", "Émirats arabes unis", 
+            "Équateur", "Érythrée", "Espagne", "Estonie", "Eswatini", "États-Unis", "Éthiopie", "Fidji", "Finlande", "France", 
+            "Gabon", "Gambie", "Géorgie", "Ghana", "Grèce", "Grenade", "Guatemala", "Guinée", "Guinée équatoriale", 
+            "Guinée-Bissau", "Guyana", "Haïti", "Honduras", "Hongrie", "Inde", "Indonésie", "Irak", "Iran", "Irlande", 
+            "Islande", "Israël", "Italie", "Jamaïque", "Japon", "Jordanie", "Kazakhstan", "Kenya", "Kirghizistan", "Kiribati", 
+            "Koweït", "Laos", "Lesotho", "Lettonie", "Liban", "Libéria", "Libye", "Liechtenstein", "Lituanie", "Luxembourg", 
+            "Macédoine du Nord", "Madagascar", "Malaisie", "Malawi", "Maldives", "Mali", "Malte", "Maroc", "Maurice", 
+            "Mauritanie", "Mexique", "Micronésie", "Moldavie", "Monaco", "Mongolie", "Monténégro", "Mozambique", "Namibie", 
+            "Nauru", "Népal", "Nicaragua", "Niger", "Nigéria", "Norvège", "Nouvelle-Zélande", "Oman", "Ouganda", 
+
+            "Ouzbékistan", "Pakistan", "Palaos", "Palestine", "Panama", "Papouasie-Nouvelle-Guinée", "Paraguay", "Pays-Bas", 
+            "Pérou", "Philippines", "Pologne", "Portugal", "Qatar", "Rép. Dém. du Congo", "République centrafricaine", 
+            "République dominicaine", "République tchèque", "Roumanie", "Royaume-Uni", "Russie", "Rwanda", "Saint-Kitts-et-Nevis", 
+            "Saint-Marin", "Saint-Vincent-et-les-Grenadines", "Sainte-Lucie", "Salomon", "Samoa", "São Tomé-et-Príncipe", 
+            "Sénégal", "Serbie", "Seychelles", "Sierra Leone", "Singapour", "Slovaquie", "Slovénie", "Somalie", "Soudan", 
+            "Soudan du Sud", "Sri Lanka", "Suède", "Suisse", "Suriname", "Syrie", "Tadjikistan", "Tanzanie", "Tchad", 
+            "Thaïlande", "Timor-Leste", "Togo", "Tonga", "Trinité-et-Tobago", "Tunisie", "Turkménistan", "Turquie", "Tuvalu", 
+            "Ukraine", "Uruguay", "Vanuatu", "Vatican", "Vénézuéla", "Viêt Nam", "Yémen", "Zambie", "Zimbabwe"
+        ]
+
+        with st.form("form_geo"):
+            # Positionne "Côte d'Ivoire" par défaut dans le menu
+            index_defaut = TOUS_LES_PAYS.index("Côte d'Ivoire") if "Côte d'Ivoire" in TOUS_LES_PAYS else 0
+            
+            pays = st.selectbox("Pays", TOUS_LES_PAYS, index=index_defaut)
+            devise = st.selectbox("Devise Principale de Comptabilité", list(DEVISES_CODES.keys()))
+            
+            if st.form_submit_button("💾 Enregistrer"):
+                save_params(entreprise_actuelle, pays, params["adresse"], params["tel"], params["email"], params["tax_id"], devise, params["type_taxe"], params["taux_taxe"], params["timezone"], params["langue_defaut"], params["logo_url"], params["terme_paiement"], params["footer_custom"], params["multi_devise"])
+                st.success("Configuration sauvegardée !")
+                st.rerun()
