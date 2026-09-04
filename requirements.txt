@@ -2,4 +2,5 @@ streamlit
 pandas
 google-generativeai
 Pillow
+requests
 
